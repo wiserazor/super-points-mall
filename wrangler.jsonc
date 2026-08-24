@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "super-points-mall",
   "main": "./dist/server/index.js",
-  "compatibility_date": "2026-08-23",
+  "compatibility_date": "2026-08-24",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
     "directory": "./dist/client"
@@ -10,6 +10,8 @@
   "d1_databases": [
     {
       "binding": "DB",
+      "database_name": "super-points-mall-db",
+      "database_id": "3acc8c49-6c5c-4dd1-86fa-f210cec0ce01",
       "migrations_dir": "migrations"
     }
   ],
