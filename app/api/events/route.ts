@@ -1,4 +1,5 @@
 import type { MutationPayload } from "@/lib/api-types";
+import { requireChildSession } from "@/lib/child-auth";
 import { findRule } from "@/lib/catalog-store";
 import { appEnv, currentBalance, ensureSchema, ownerKey } from "@/lib/db";
 import { ensureExcelHistory } from "@/lib/excel-history";
@@ -37,6 +38,8 @@ export async function POST(request: Request): Promise<Response> {
   await ensureSchema(DB);
   const owner = ownerKey(request);
   await ensureExcelHistory(DB, owner);
+  const unauthorized = await requireChildSession(request, DB, owner, body.profile);
+  if (unauthorized) return unauthorized;
   const rule = await findRule(DB, owner, body.ruleId);
   if (!rule) return Response.json({ error: "这个积分项目已停用或不存在。" }, { status: 404 });
 

@@ -6,7 +6,7 @@ import type { AdminOverviewPayload, CustomRequest } from "@/lib/api-types";
 import { PROFILES, RULE_CATEGORIES, STORE_CATEGORIES, type Profile } from "@/lib/catalog";
 import type { EditableItem, EditableRule } from "@/lib/catalog-store";
 
-type AdminTab = "requests" | "rules" | "items" | "balance";
+type AdminTab = "requests" | "rules" | "items" | "balance" | "security";
 
 const newRule = (): EditableRule => ({ id: "", label: "", points: 20, icon: "⭐", category: "成长", kind: "reward", active: true, custom: true });
 const newItem = (): EditableItem => ({ id: "", label: "", cost: 100, icon: "🎁", category: "礼物", unit: "1 个", active: true, custom: true });
@@ -35,6 +35,11 @@ export default function AdminClient() {
   const [adjustMode, setAdjustMode] = useState<"set" | "delta">("set");
   const [adjustValue, setAdjustValue] = useState("");
   const [adjustReason, setAdjustReason] = useState("");
+  const [knowledgeMode, setKnowledgeMode] = useState<"set" | "delta">("set");
+  const [knowledgeValue, setKnowledgeValue] = useState("");
+  const [knowledgeReason, setKnowledgeReason] = useState("");
+  const [childPinDrafts, setChildPinDrafts] = useState<Record<Profile, string>>({ luke: "", lilian: "" });
+  const [childPinConfirms, setChildPinConfirms] = useState<Record<Profile, string>>({ luke: "", lilian: "" });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -128,6 +133,23 @@ export default function AdminClient() {
     }
   }
 
+  async function saveChildPin(profile: Profile) {
+    const nextPin = childPinDrafts[profile];
+    if (!/^\d{4,12}$/.test(nextPin)) {
+      setError("孩子 PIN 必须是 4 到 12 位数字。");
+      return;
+    }
+    if (nextPin !== childPinConfirms[profile]) {
+      setError("两次输入的孩子 PIN 不一致。");
+      return;
+    }
+    const ok = await runAction({ action: "set-child-pin", profile, pin: nextPin });
+    if (ok) {
+      setChildPinDrafts((old) => ({ ...old, [profile]: "" }));
+      setChildPinConfirms((old) => ({ ...old, [profile]: "" }));
+    }
+  }
+
   const pendingRequests = useMemo(() => data?.requests.filter((request) => request.status === "pending") || [], [data?.requests]);
 
   if (!pin || !data) {
@@ -157,7 +179,7 @@ export default function AdminClient() {
       <section className="admin-balance-grid">
         {(Object.keys(PROFILES) as Profile[]).map((profile) => (
           <article key={profile} className={`admin-balance-card ${profile}`}>
-            <span>{PROFILES[profile].avatar}</span><div><small>{PROFILES[profile].name} 当前积分</small><strong>{data.balances[profile].balance.toLocaleString("zh-CN")}</strong><p>商城 {data.balances[profile].mallPoints} · 知识平台 {data.balances[profile].knowledgePoints}</p></div>
+            <span>{PROFILES[profile].avatar}</span><div><small>{PROFILES[profile].name} 当前积分</small><strong>{data.balances[profile].balance.toLocaleString("zh-CN")}</strong><p>商城 {data.balances[profile].mallPoints} · 知识原始 {data.balances[profile].knowledgePoints}{data.balances[profile].knowledgeAdjustment !== 0 ? ` · 修正 ${data.balances[profile].knowledgeAdjustment > 0 ? "+" : ""}${data.balances[profile].knowledgeAdjustment}` : ""}</p></div>
           </article>
         ))}
         <article className="admin-balance-card pending"><span>📨</span><div><small>待审核申请</small><strong>{pendingRequests.length}</strong><p>来自孩子的自定义项目</p></div></article>
@@ -168,6 +190,7 @@ export default function AdminClient() {
         <button className={tab === "rules" ? "active" : ""} onClick={() => setTab("rules")} type="button">⭐ 奖励与惩罚</button>
         <button className={tab === "items" ? "active" : ""} onClick={() => setTab("items")} type="button">🎁 礼物</button>
         <button className={tab === "balance" ? "active" : ""} onClick={() => setTab("balance")} type="button">⚖️ 积分调整</button>
+        <button className={tab === "security" ? "active" : ""} onClick={() => setTab("security")} type="button">🔐 孩子 PIN</button>
       </nav>
 
       {error && <div className="admin-alert error">{error}</div>}
@@ -223,14 +246,52 @@ export default function AdminClient() {
         {tab === "balance" && (
           <>
             <AdminPanelTitle eyebrow="BALANCE CONTROL" title="调整孩子积分" action={null} />
-            <div className="adjust-card">
-              <div className="admin-segmented">{(Object.keys(PROFILES) as Profile[]).map((profile) => <button type="button" className={adjustProfile === profile ? "active" : ""} key={profile} onClick={() => setAdjustProfile(profile)}>{PROFILES[profile].avatar} {PROFILES[profile].name}</button>)}</div>
-              <div className="current-balance-note">当前积分 <strong>{data.balances[adjustProfile].balance.toLocaleString("zh-CN")}</strong></div>
-              <div className="admin-segmented small"><button type="button" className={adjustMode === "set" ? "active" : ""} onClick={() => setAdjustMode("set")}>校准到指定分数</button><button type="button" className={adjustMode === "delta" ? "active" : ""} onClick={() => setAdjustMode("delta")}>直接增加或扣除</button></div>
-              <label>{adjustMode === "set" ? "目标积分" : "变动分数（扣分请输入负数）"}<input type="number" step="0.5" value={adjustValue} onChange={(event) => setAdjustValue(event.target.value)} placeholder={adjustMode === "set" ? "例如 2000" : "例如 50 或 -50"} /></label>
-              <label>调整原因<input maxLength={120} value={adjustReason} onChange={(event) => setAdjustReason(event.target.value)} placeholder="例如：补录学校奖励 / 修正误操作" /></label>
-              <p>修改会生成一条“家长调整积分”流水，旧历史不会被删除。</p>
-              <button className="admin-primary" type="button" disabled={busy || !adjustValue || !adjustReason.trim()} onClick={() => void runAction({ action: "adjust-balance", profile: adjustProfile, mode: adjustMode, value: Number(adjustValue), reason: adjustReason, eventDate: todayLocal(), idempotencyKey: crypto.randomUUID() }).then((ok) => { if (ok) { setAdjustValue(""); setAdjustReason(""); } })}>{busy ? "正在保存…" : "确认调整"}</button>
+            <div className="admin-segmented profile-control">{(Object.keys(PROFILES) as Profile[]).map((profile) => <button type="button" className={adjustProfile === profile ? "active" : ""} key={profile} onClick={() => setAdjustProfile(profile)}>{PROFILES[profile].avatar} {PROFILES[profile].name}</button>)}</div>
+            <div className="adjust-grid">
+              <div className="adjust-card">
+                <span className="adjust-kicker">TOTAL BALANCE</span>
+                <h3>总积分 / 商城流水</h3>
+                <div className="current-balance-note">当前总积分 <strong>{data.balances[adjustProfile].balance.toLocaleString("zh-CN")}</strong></div>
+                <div className="admin-segmented small"><button type="button" className={adjustMode === "set" ? "active" : ""} onClick={() => setAdjustMode("set")}>校准到指定分数</button><button type="button" className={adjustMode === "delta" ? "active" : ""} onClick={() => setAdjustMode("delta")}>直接增加或扣除</button></div>
+                <label>{adjustMode === "set" ? "目标总积分" : "变动分数（扣分请输入负数）"}<input type="number" step="0.5" value={adjustValue} onChange={(event) => setAdjustValue(event.target.value)} placeholder={adjustMode === "set" ? "例如 2000" : "例如 50 或 -50"} /></label>
+                <label>调整原因<input maxLength={120} value={adjustReason} onChange={(event) => setAdjustReason(event.target.value)} placeholder="例如：补录学校奖励 / 修正误操作" /></label>
+                <p>生成“家长调整积分”商城流水，适合普通补录和校准。</p>
+                <button className="admin-primary" type="button" disabled={busy || !adjustValue || !adjustReason.trim()} onClick={() => void runAction({ action: "adjust-balance", profile: adjustProfile, mode: adjustMode, value: Number(adjustValue), reason: adjustReason, eventDate: todayLocal(), idempotencyKey: crypto.randomUUID() }).then((ok) => { if (ok) { setAdjustValue(""); setAdjustReason(""); } })}>{busy ? "正在保存…" : "确认调整总积分"}</button>
+              </div>
+
+              <div className="adjust-card knowledge-card">
+                <span className="adjust-kicker">KNOWLEDGE SOURCE</span>
+                <h3>知识平台同步积分</h3>
+                <div className="knowledge-breakdown"><span>原始同步 <b>{data.balances[adjustProfile].knowledgePoints}</b></span><span>家长修正 <b>{data.balances[adjustProfile].knowledgeAdjustment > 0 ? "+" : ""}{data.balances[adjustProfile].knowledgeAdjustment}</b></span><span>当前有效 <b>{data.balances[adjustProfile].effectiveKnowledgePoints}</b></span></div>
+                <div className="admin-segmented small"><button type="button" className={knowledgeMode === "set" ? "active" : ""} onClick={() => setKnowledgeMode("set")}>设为指定知识分</button><button type="button" className={knowledgeMode === "delta" ? "active" : ""} onClick={() => setKnowledgeMode("delta")}>增加或扣除修正</button></div>
+                <label>{knowledgeMode === "set" ? "目标有效知识积分" : "修正分数（扣分请输入负数）"}<input type="number" step="0.5" value={knowledgeValue} onChange={(event) => setKnowledgeValue(event.target.value)} placeholder={knowledgeMode === "set" ? "例如 1200" : "例如 -100"} /></label>
+                <label>修正原因<input maxLength={120} value={knowledgeReason} onChange={(event) => setKnowledgeReason(event.target.value)} placeholder="例如：撤销知识平台误加分" /></label>
+                <p>不覆盖知识平台原始值；修正会单独记录，可随时撤销。</p>
+                <button className="admin-primary" type="button" disabled={busy || !knowledgeValue || !knowledgeReason.trim()} onClick={() => void runAction({ action: "adjust-knowledge", profile: adjustProfile, mode: knowledgeMode, value: Number(knowledgeValue), reason: knowledgeReason, idempotencyKey: crypto.randomUUID() }).then((ok) => { if (ok) { setKnowledgeValue(""); setKnowledgeReason(""); } })}>{busy ? "正在保存…" : "保存知识积分修正"}</button>
+              </div>
+            </div>
+            <div className="adjustment-history">
+              <h3>知识积分修正记录</h3>
+              {!data.knowledgeAdjustments.filter((item) => item.profile === adjustProfile).length && <p className="quiet-copy">这个孩子还没有知识积分修正。</p>}
+              {data.knowledgeAdjustments.filter((item) => item.profile === adjustProfile).map((item) => <article className={item.undone ? "undone" : ""} key={item.id}><div><strong>{item.note}</strong><small>{new Date(item.createdAt).toLocaleString("zh-CN")}</small></div><b className={item.points >= 0 ? "positive" : "negative"}>{item.points >= 0 ? "+" : ""}{item.points}</b>{item.undone ? <span>已撤销</span> : <button type="button" disabled={busy} onClick={() => void runAction({ action: "undo-knowledge-adjustment", profile: item.profile, adjustmentId: item.id, idempotencyKey: crypto.randomUUID() })}>撤销</button>}</article>)}
+            </div>
+          </>
+        )}
+
+        {tab === "security" && (
+          <>
+            <AdminPanelTitle eyebrow="CHILD SECURITY" title="设置孩子独立 PIN" action={null} />
+            <p className="security-intro">每个孩子只能用自己的 PIN 解锁自己的档案。查看积分无需 PIN，但记录、兑换、申请和撤销都需要先解锁。</p>
+            <div className="security-grid">
+              {(Object.keys(PROFILES) as Profile[]).map((profile) => (
+                <article className={`security-card ${profile}`} key={profile}>
+                  <div className="security-title"><span>{PROFILES[profile].avatar}</span><div><h3>{PROFILES[profile].name}</h3><p>{data.childPins[profile].configured ? "✅ PIN 已设置" : "⚠️ 尚未设置 PIN"}</p></div></div>
+                  <label>新 PIN<input inputMode="numeric" type="password" value={childPinDrafts[profile]} onChange={(event) => setChildPinDrafts((old) => ({ ...old, [profile]: event.target.value.replace(/\D/g, "").slice(0, 12) }))} placeholder="4 到 12 位数字" /></label>
+                  <label>再次输入<input inputMode="numeric" type="password" value={childPinConfirms[profile]} onChange={(event) => setChildPinConfirms((old) => ({ ...old, [profile]: event.target.value.replace(/\D/g, "").slice(0, 12) }))} placeholder="再次输入确认" /></label>
+                  <p>重设后，这个孩子之前已解锁的设备会立即重新要求 PIN。</p>
+                  <button className="admin-primary" type="button" disabled={busy || childPinDrafts[profile].length < 4 || childPinDrafts[profile] !== childPinConfirms[profile]} onClick={() => void saveChildPin(profile)}>{data.childPins[profile].configured ? "重设 PIN" : "设置 PIN"}</button>
+                </article>
+              ))}
             </div>
           </>
         )}

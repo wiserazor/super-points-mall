@@ -86,10 +86,40 @@ export async function ensureSchema(db: D1Database): Promise<void> {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS child_credentials (
+      owner_key TEXT NOT NULL,
+      profile TEXT NOT NULL CHECK (profile IN ('luke', 'lilian')),
+      pin_salt TEXT NOT NULL,
+      pin_hash TEXT NOT NULL,
+      iterations INTEGER NOT NULL,
+      failed_attempts INTEGER NOT NULL DEFAULT 0,
+      locked_until TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (owner_key, profile)
+    )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS child_sessions (
+      token_hash TEXT PRIMARY KEY,
+      owner_key TEXT NOT NULL,
+      profile TEXT NOT NULL CHECK (profile IN ('luke', 'lilian')),
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
+    db.prepare(`CREATE TABLE IF NOT EXISTS knowledge_adjustments (
+      id TEXT PRIMARY KEY,
+      owner_key TEXT NOT NULL,
+      profile TEXT NOT NULL CHECK (profile IN ('luke', 'lilian')),
+      points REAL NOT NULL,
+      note TEXT NOT NULL,
+      idempotency_key TEXT NOT NULL UNIQUE,
+      reverses_adjustment_id TEXT UNIQUE,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_mall_events_owner_profile_created ON mall_events(owner_key, profile, created_at DESC)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_mall_events_owner_profile_rule ON mall_events(owner_key, profile, rule_id, event_date)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_catalog_entries_owner_type_active ON catalog_entries(owner_key, entry_type, active)"),
     db.prepare("CREATE INDEX IF NOT EXISTS idx_custom_requests_owner_status_created ON custom_requests(owner_key, status, created_at DESC)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_child_sessions_owner_profile ON child_sessions(owner_key, profile, expires_at)"),
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_knowledge_adjustments_owner_profile_created ON knowledge_adjustments(owner_key, profile, created_at DESC)"),
   ]);
 }
 
@@ -97,7 +127,8 @@ export async function currentBalance(db: D1Database, owner: string, profile: str
   const row = await db.prepare(`
     SELECT
       COALESCE((SELECT points FROM knowledge_snapshots WHERE owner_key = ? AND profile = ?), 0) +
+      COALESCE((SELECT SUM(points) FROM knowledge_adjustments WHERE owner_key = ? AND profile = ?), 0) +
       COALESCE((SELECT SUM(points) FROM mall_events WHERE owner_key = ? AND profile = ?), 0) AS balance
-  `).bind(owner, profile, owner, profile).first<{ balance: number }>();
+  `).bind(owner, profile, owner, profile, owner, profile).first<{ balance: number }>();
   return Number(row?.balance || 0);
 }

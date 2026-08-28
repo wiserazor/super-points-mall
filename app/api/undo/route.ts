@@ -1,4 +1,5 @@
 import type { MutationPayload } from "@/lib/api-types";
+import { requireChildSession } from "@/lib/child-auth";
 import { appEnv, currentBalance, ensureSchema, ownerKey } from "@/lib/db";
 import { ensureExcelHistory } from "@/lib/excel-history";
 import { validDate, validProfile } from "@/lib/points";
@@ -27,6 +28,8 @@ export async function POST(request: Request): Promise<Response> {
   await ensureSchema(DB);
   const owner = ownerKey(request);
   await ensureExcelHistory(DB, owner);
+  const unauthorized = await requireChildSession(request, DB, owner, body.profile);
+  if (unauthorized) return unauthorized;
 
   const result = await DB.prepare(`
     INSERT INTO mall_events (

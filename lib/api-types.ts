@@ -20,7 +20,10 @@ export type DashboardPayload = {
   profile: Profile;
   balance: number;
   knowledgePoints: number;
+  knowledgeAdjustment: number;
+  effectiveKnowledgePoints: number;
   mallPoints: number;
+  childPinConfigured: boolean;
   level: Level;
   integration: {
     state: "live" | "stale" | "unavailable";
@@ -49,7 +52,22 @@ export type CustomRequest = {
 };
 
 export type AdminOverviewPayload = {
-  balances: Record<Profile, { balance: number; knowledgePoints: number; mallPoints: number }>;
+  balances: Record<Profile, {
+    balance: number;
+    knowledgePoints: number;
+    knowledgeAdjustment: number;
+    effectiveKnowledgePoints: number;
+    mallPoints: number;
+  }>;
+  childPins: Record<Profile, { configured: boolean }>;
+  knowledgeAdjustments: Array<{
+    id: string;
+    profile: Profile;
+    points: number;
+    note: string;
+    createdAt: string;
+    undone: boolean;
+  }>;
   rules: EditableRule[];
   items: EditableItem[];
   requests: CustomRequest[];

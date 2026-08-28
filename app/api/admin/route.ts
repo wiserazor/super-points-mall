@@ -8,6 +8,7 @@ import {
   type RuleCategory,
   type StoreItem,
 } from "@/lib/catalog";
+import { childPinConfigured, setChildPin, validChildPin } from "@/lib/child-auth";
 import { loadCatalog } from "@/lib/catalog-store";
 import { appEnv, currentBalance, ensureSchema, ownerKey } from "@/lib/db";
 import { ensureExcelHistory } from "@/lib/excel-history";
@@ -26,6 +27,8 @@ type AdminAction = {
   idempotencyKey?: unknown;
   requestId?: unknown;
   status?: unknown;
+  pin?: unknown;
+  adjustmentId?: unknown;
 };
 
 type RequestRow = {
@@ -36,6 +39,15 @@ type RequestRow = {
   note: string | null;
   status: "pending" | "approved" | "rejected";
   created_at: string;
+};
+
+type AdjustmentRow = {
+  id: string;
+  profile: Profile;
+  points: number;
+  note: string;
+  created_at: string;
+  reversed_by: string | null;
 };
 
 type EntryInput = Record<string, unknown>;
@@ -72,7 +84,7 @@ async function prepare(request: Request): Promise<{ db: D1Database; owner: strin
 }
 
 async function overview(request: Request, db: D1Database, owner: string): Promise<AdminOverviewPayload> {
-  const [catalog, lukeSync, lilianSync, requestResult] = await Promise.all([
+  const [catalog, lukeSync, lilianSync, requestResult, adjustmentResult, lukePin, lilianPin] = await Promise.all([
     loadCatalog(db, owner, true),
     syncKnowledgePoints(request, "luke", db),
     syncKnowledgePoints(request, "lilian", db),
@@ -83,6 +95,17 @@ async function overview(request: Request, db: D1Database, owner: string): Promis
       ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC
       LIMIT 100
     `).bind(owner).all<RequestRow>(),
+    db.prepare(`
+      SELECT adjustment.id, adjustment.profile, adjustment.points, adjustment.note, adjustment.created_at,
+             reversal.id AS reversed_by
+      FROM knowledge_adjustments adjustment
+      LEFT JOIN knowledge_adjustments reversal ON reversal.reverses_adjustment_id = adjustment.id
+      WHERE adjustment.owner_key = ? AND adjustment.reverses_adjustment_id IS NULL
+      ORDER BY adjustment.created_at DESC
+      LIMIT 100
+    `).bind(owner).all<AdjustmentRow>(),
+    childPinConfigured(db, owner, "luke"),
+    childPinConfigured(db, owner, "lilian"),
   ]);
   const [lukeBalance, lilianBalance, localResults] = await Promise.all([
     currentBalance(db, owner, "luke"),
@@ -90,10 +113,14 @@ async function overview(request: Request, db: D1Database, owner: string): Promis
     db.batch([
       db.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM mall_events WHERE owner_key = ? AND profile = 'luke'").bind(owner),
       db.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM mall_events WHERE owner_key = ? AND profile = 'lilian'").bind(owner),
+      db.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM knowledge_adjustments WHERE owner_key = ? AND profile = 'luke'").bind(owner),
+      db.prepare("SELECT COALESCE(SUM(points), 0) AS points FROM knowledge_adjustments WHERE owner_key = ? AND profile = 'lilian'").bind(owner),
     ]),
   ]);
   const localLuke = Number((localResults[0].results[0] as { points: number } | undefined)?.points || 0);
   const localLilian = Number((localResults[1].results[0] as { points: number } | undefined)?.points || 0);
+  const adjustmentLuke = Number((localResults[2].results[0] as { points: number } | undefined)?.points || 0);
+  const adjustmentLilian = Number((localResults[3].results[0] as { points: number } | undefined)?.points || 0);
   const requests: CustomRequest[] = requestResult.results.map((row) => ({
     id: row.id,
     profile: row.profile,
@@ -106,9 +133,30 @@ async function overview(request: Request, db: D1Database, owner: string): Promis
 
   return {
     balances: {
-      luke: { balance: lukeBalance, knowledgePoints: lukeSync.points, mallPoints: localLuke },
-      lilian: { balance: lilianBalance, knowledgePoints: lilianSync.points, mallPoints: localLilian },
+      luke: {
+        balance: lukeBalance,
+        knowledgePoints: lukeSync.points,
+        knowledgeAdjustment: adjustmentLuke,
+        effectiveKnowledgePoints: lukeSync.points + adjustmentLuke,
+        mallPoints: localLuke,
+      },
+      lilian: {
+        balance: lilianBalance,
+        knowledgePoints: lilianSync.points,
+        knowledgeAdjustment: adjustmentLilian,
+        effectiveKnowledgePoints: lilianSync.points + adjustmentLilian,
+        mallPoints: localLilian,
+      },
     },
+    childPins: { luke: { configured: lukePin }, lilian: { configured: lilianPin } },
+    knowledgeAdjustments: adjustmentResult.results.map((row) => ({
+      id: row.id,
+      profile: row.profile,
+      points: Number(row.points),
+      note: row.note,
+      createdAt: row.created_at,
+      undone: Boolean(row.reversed_by),
+    })),
     rules: catalog.rules,
     items: catalog.items,
     requests,
@@ -236,6 +284,87 @@ async function adjustBalance(request: Request, db: D1Database, owner: string, bo
   return Response.json({ ok: true, balance, message: `积分已调整为 ${balance}。` } satisfies MutationPayload);
 }
 
+async function adjustKnowledge(request: Request, db: D1Database, owner: string, body: AdminAction): Promise<Response> {
+  if (
+    !validProfile(body.profile) || (body.mode !== "delta" && body.mode !== "set") ||
+    typeof body.idempotencyKey !== "string" || body.idempotencyKey.length > 80
+  ) {
+    return Response.json({ error: "知识积分修正信息不完整。" }, { status: 400 });
+  }
+  const value = safeNumber(body.value, -1000000, 1000000);
+  const reason = safeText(body.reason, 120);
+  if (value === null || !reason) return Response.json({ error: "请输入修正分数和原因。" }, { status: 400 });
+
+  const sync = await syncKnowledgePoints(request, body.profile, db);
+  const offsetRow = await db.prepare(`
+    SELECT COALESCE(SUM(points), 0) AS points
+    FROM knowledge_adjustments
+    WHERE owner_key = ? AND profile = ?
+  `).bind(owner, body.profile).first<{ points: number }>();
+  const offsetBefore = Number(offsetRow?.points || 0);
+  const effectiveBefore = sync.points + offsetBefore;
+  const delta = body.mode === "set" ? value - effectiveBefore : value;
+  if (Math.abs(delta) < 0.0001) {
+    return Response.json({ ok: true, balance: await currentBalance(db, owner, body.profile), message: "知识平台积分已经是这个数值。" } satisfies MutationPayload);
+  }
+
+  const idempotencyKey = `knowledge-adjustment:${owner}:${body.idempotencyKey}`;
+  try {
+    await db.prepare(`
+      INSERT INTO knowledge_adjustments (
+        id, owner_key, profile, points, note, idempotency_key
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(
+      crypto.randomUUID(), owner, body.profile, delta,
+      `${body.mode === "set" ? `将知识积分校准为 ${value}` : `知识积分增减 ${delta}`} · ${reason}`,
+      idempotencyKey,
+    ).run();
+  } catch (error) {
+    if (!(error instanceof Error && error.message.includes("UNIQUE constraint failed"))) throw error;
+  }
+
+  const balance = await currentBalance(db, owner, body.profile);
+  return Response.json({
+    ok: true,
+    balance,
+    message: `知识积分修正已保存，当前有效知识积分为 ${effectiveBefore + delta}。`,
+  } satisfies MutationPayload);
+}
+
+async function undoKnowledgeAdjustment(db: D1Database, owner: string, body: AdminAction): Promise<Response> {
+  const adjustmentId = safeText(body.adjustmentId, 100);
+  if (
+    !validProfile(body.profile) || !adjustmentId ||
+    typeof body.idempotencyKey !== "string" || body.idempotencyKey.length > 80
+  ) {
+    return Response.json({ error: "找不到要撤销的知识积分修正。" }, { status: 400 });
+  }
+
+  const idempotencyKey = `knowledge-adjustment-undo:${owner}:${body.idempotencyKey}`;
+  const result = await db.prepare(`
+    INSERT INTO knowledge_adjustments (
+      id, owner_key, profile, points, note, idempotency_key, reverses_adjustment_id
+    )
+    SELECT ?, owner_key, profile, -points, '撤销：' || note, ?, id
+    FROM knowledge_adjustments original
+    WHERE original.id = ? AND original.owner_key = ? AND original.profile = ?
+      AND original.reverses_adjustment_id IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM knowledge_adjustments reversal
+        WHERE reversal.reverses_adjustment_id = original.id
+      )
+  `).bind(crypto.randomUUID(), idempotencyKey, adjustmentId, owner, body.profile).run();
+
+  if (Number(result.meta.changes || 0) === 0) {
+    return Response.json({ error: "这条知识积分修正已经撤销，或不属于当前档案。" }, { status: 409 });
+  }
+  return Response.json({
+    ok: true,
+    balance: await currentBalance(db, owner, body.profile),
+    message: "知识积分修正已撤销。",
+  } satisfies MutationPayload);
+}
+
 export async function POST(request: Request): Promise<Response> {
   const context = await prepare(request);
   if (context instanceof Response) return context;
@@ -252,7 +381,16 @@ export async function POST(request: Request): Promise<Response> {
     if (!entry) return Response.json({ error: "礼物信息不完整。" }, { status: 400 });
     return saveItem(context.db, context.owner, entry, safeText(body.requestId, 100));
   }
+  if (body.action === "set-child-pin") {
+    if (!validProfile(body.profile) || !validChildPin(body.pin)) {
+      return Response.json({ error: "孩子 PIN 必须是 4 到 12 位数字。" }, { status: 400 });
+    }
+    await setChildPin(context.db, context.owner, body.profile, body.pin);
+    return Response.json({ ok: true, message: `${body.profile === "luke" ? "Luke" : "Lilian"} 的 PIN 已更新，旧的解锁会话已失效。` });
+  }
   if (body.action === "adjust-balance") return adjustBalance(request, context.db, context.owner, body);
+  if (body.action === "adjust-knowledge") return adjustKnowledge(request, context.db, context.owner, body);
+  if (body.action === "undo-knowledge-adjustment") return undoKnowledgeAdjustment(context.db, context.owner, body);
   if (body.action === "resolve-request") {
     const id = safeText(body.requestId, 100);
     if (!id || body.status !== "rejected") return Response.json({ error: "审核操作不完整。" }, { status: 400 });

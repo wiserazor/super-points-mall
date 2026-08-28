@@ -1,4 +1,5 @@
 import type { MutationPayload } from "@/lib/api-types";
+import { requireChildSession } from "@/lib/child-auth";
 import { findItem } from "@/lib/catalog-store";
 import { appEnv, currentBalance, ensureSchema, ownerKey } from "@/lib/db";
 import { ensureExcelHistory } from "@/lib/excel-history";
@@ -31,6 +32,8 @@ export async function POST(request: Request): Promise<Response> {
   await ensureSchema(DB);
   const owner = ownerKey(request);
   await ensureExcelHistory(DB, owner);
+  const unauthorized = await requireChildSession(request, DB, owner, body.profile);
+  if (unauthorized) return unauthorized;
   const item = await findItem(DB, owner, body.itemId);
   if (!item) return Response.json({ error: "这份礼物已停用或不存在。" }, { status: 404 });
   const integration = await syncKnowledgePoints(request, body.profile, DB);
@@ -48,13 +51,14 @@ export async function POST(request: Request): Promise<Response> {
       SELECT ?, ?, ?, 'redemption', 'purchase', ?, ?, ?, ?, ?, ?, ?
       WHERE (
         COALESCE((SELECT points FROM knowledge_snapshots WHERE owner_key = ? AND profile = ?), 0) +
+        COALESCE((SELECT SUM(points) FROM knowledge_adjustments WHERE owner_key = ? AND profile = ?), 0) +
         COALESCE((SELECT SUM(points) FROM mall_events WHERE owner_key = ? AND profile = ?), 0)
       ) >= ?
     `).bind(
       crypto.randomUUID(), owner, body.profile, item.id, `兑换：${item.label}`,
       -totalCost, quantity, `${tier.name}${tier.discountLabel} · ${item.unit}`,
       body.eventDate, body.idempotencyKey,
-      owner, body.profile, owner, body.profile, totalCost,
+      owner, body.profile, owner, body.profile, owner, body.profile, totalCost,
     ).run();
 
     if (Number(result.meta.changes || 0) === 0) {
