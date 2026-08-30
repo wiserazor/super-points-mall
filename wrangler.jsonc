@@ -2,6 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "super-points-mall",
   "main": "./dist/server/index.js",
+  "workers_dev": true,
   "compatibility_date": "2026-08-27",
   "compatibility_flags": ["nodejs_compat"],
   "assets": {
@@ -19,6 +20,12 @@
     {
       "binding": "KNOWLEDGE_PLATFORM",
       "service": "knowledge-platform"
+    }
+  ],
+  "routes": [
+    {
+      "pattern": "points.wiser-tools.com",
+      "custom_domain": true
     }
   ],
   "observability": {

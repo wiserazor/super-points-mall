@@ -159,12 +159,12 @@ export async function requireChildSession(
   if (!await childPinConfigured(db, owner, profile)) {
     return Response.json(
       { error: "家长还没有为这个档案设置孩子 PIN，请先到家长后台设置。", code: "CHILD_PIN_NOT_CONFIGURED" },
-      { status: 428 },
+      { status: 428, headers: { "Cache-Control": "private, no-store", Vary: "x-child-session, x-parent-pin" } },
     );
   }
   if (await isChildSession(request, db, owner, profile)) return null;
   return Response.json(
-    { error: "请先用当前孩子的 PIN 解锁，不能修改其他人的档案。", code: "CHILD_SESSION_REQUIRED" },
-    { status: 401 },
+    { error: "请先用当前孩子的 PIN 解锁，不能查看或修改其他人的档案。", code: "CHILD_SESSION_REQUIRED" },
+    { status: 401, headers: { "Cache-Control": "private, no-store", Vary: "x-child-session, x-parent-pin" } },
   );
 }

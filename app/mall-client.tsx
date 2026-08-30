@@ -13,6 +13,7 @@ import {
 import { discountedCost } from "@/lib/points";
 
 type Tab = "earn" | "store" | "history";
+type AccessState = "checking" | "required" | "unconfigured" | "unlocked";
 type Selection =
   | { type: "rule"; value: PointRule }
   | { type: "item"; value: StoreItem }
@@ -64,28 +65,48 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
   const [customLabel, setCustomLabel] = useState("");
   const [customNote, setCustomNote] = useState("");
   const [childSession, setChildSession] = useState("");
-  const [pinPromptOpen, setPinPromptOpen] = useState(false);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [accessState, setAccessState] = useState<AccessState>("checking");
   const [childPinInput, setChildPinInput] = useState("");
   const [pinError, setPinError] = useState<string | null>(null);
 
   const learner = PROFILES[profile];
   const balance = dashboard?.balance ?? 0;
 
-  const loadDashboard = useCallback(async (signal?: AbortSignal) => {
+  const loadDashboard = useCallback(async (signal?: AbortSignal, sessionToken = childSession): Promise<boolean> => {
     try {
-      const response = await fetch(`/api/dashboard?profile=${profile}`, { signal });
+      const response = await fetch(`/api/dashboard?profile=${profile}`, {
+        signal,
+        cache: "no-store",
+        headers: sessionToken ? { "x-child-session": sessionToken } : undefined,
+      });
       const payload: unknown = await response.json();
+      if (response.status === 401 || response.status === 428) {
+        window.sessionStorage.removeItem(`mall-child-session-${profile}`);
+        setChildSession("");
+        setDashboard(null);
+        setAccessState(response.status === 428 ? "unconfigured" : "required");
+        setPinError(response.status === 428 ? null : messageFromPayload(payload, "请输入自己的 PIN 解锁档案。"));
+        return false;
+      }
       if (!response.ok || !isDashboardPayload(payload)) throw new Error(messageFromPayload(payload, "积分暂时没有加载成功。"));
       setDashboard(payload);
+      setAccessState("unlocked");
+      setPinError(null);
+      return true;
     } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") return;
-      setToast({ tone: "error", text: error instanceof Error ? error.message : "积分暂时没有加载成功。" });
+      if (error instanceof DOMException && error.name === "AbortError") return false;
+      setDashboard(null);
+      setAccessState("required");
+      setPinError(error instanceof Error ? error.message : "积分暂时没有加载成功。");
+      return false;
     } finally {
       setLoading(false);
     }
-  }, [profile]);
+  }, [childSession, profile]);
 
   useEffect(() => {
+    if (!sessionReady) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => void loadDashboard(controller.signal), 0);
     window.history.replaceState(null, "", `/?profile=${profile}`);
@@ -93,12 +114,12 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [loadDashboard, profile]);
+  }, [loadDashboard, profile, sessionReady]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setChildSession(window.sessionStorage.getItem(`mall-child-session-${profile}`) || "");
-      setPinPromptOpen(false);
+      setSessionReady(true);
       setChildPinInput("");
       setPinError(null);
     }, 0);
@@ -131,6 +152,8 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
     if (next === profile) return;
     setDashboard(null);
     setLoading(true);
+    setSessionReady(false);
+    setAccessState("checking");
     setSelection(null);
     setCustomRequestType(null);
     setProfile(next);
@@ -139,16 +162,16 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
   function lockProfile() {
     window.sessionStorage.removeItem(`mall-child-session-${profile}`);
     setChildSession("");
+    setDashboard(null);
+    setLoading(false);
+    setAccessState("required");
+    setPinError(null);
   }
 
   function requireChildSession(): string | null {
-    if (!dashboard?.childPinConfigured) {
-      setToast({ tone: "error", text: "请家长先到后台为这个档案设置孩子 PIN。" });
-      return null;
-    }
     if (!childSession) {
-      setPinPromptOpen(true);
-      setPinError(null);
+      setDashboard(null);
+      setAccessState("required");
       return null;
     }
     return childSession;
@@ -174,7 +197,7 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
       window.sessionStorage.setItem(`mall-child-session-${profile}`, payload.token);
       setChildSession(payload.token);
       setChildPinInput("");
-      setPinPromptOpen(false);
+      setLoading(true);
       setToast({ tone: "success", text: `${learner.name} 的档案已解锁，可以自己管理积分啦！` });
     } catch (error) {
       setPinError(error instanceof Error ? error.message : "PIN 验证没有成功。");
@@ -215,7 +238,6 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
       const payload: unknown = await response.json();
       if (response.status === 401) {
         lockProfile();
-        setPinPromptOpen(true);
       }
       if (!response.ok || !isMutationPayload(payload)) throw new Error(messageFromPayload(payload, "这次操作没有成功，请再试一次。"));
       setSelection(null);
@@ -242,7 +264,6 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
       const payload: unknown = await response.json();
       if (response.status === 401) {
         lockProfile();
-        setPinPromptOpen(true);
       }
       if (!response.ok || !isMutationPayload(payload)) throw new Error(messageFromPayload(payload, "撤销没有成功。"));
       setToast({ tone: "success", text: payload.message });
@@ -274,7 +295,6 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
       const payload: unknown = await response.json();
       if (response.status === 401) {
         lockProfile();
-        setPinPromptOpen(true);
       }
       if (!response.ok) throw new Error(messageFromPayload(payload, "申请暂时没有保存成功。"));
       setCustomRequestType(null);
@@ -298,6 +318,53 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
   const levelProgress = dashboard?.level.nextAt
     ? Math.max(0, Math.min(100, ((balance - dashboard.level.min) / (dashboard.level.nextAt - dashboard.level.min)) * 100))
     : 100;
+
+  if (!dashboard) {
+    return (
+      <main className={`access-shell profile-${profile}`}>
+        <header className="access-topbar">
+          <span className="brand" aria-label="超级无敌积分大商场">
+            <span className="brand-orb">S!</span>
+            <span><strong>超级无敌</strong><small>积分大商场</small></span>
+          </span>
+          <Link className="parent-link" href="/admin" aria-label="进入家长后台">⚙️<strong>家长</strong></Link>
+        </header>
+        <section className="access-card" aria-live="polite">
+          <span className="access-stars">✦　⭐　✦</span>
+          <div className="access-avatar">{learner.avatar}</div>
+          <span className="modal-kicker">MY PRIVATE GROWTH ISLAND</span>
+          <h1>{learner.name} 的成长岛</h1>
+          <p>先确认是你本人，积分、礼物和成长足迹才会打开。</p>
+          <div className="access-profile-switch" aria-label="选择儿童档案">
+            {(Object.keys(PROFILES) as Profile[]).map((key) => (
+              <button className={key === profile ? "active" : ""} key={key} type="button" onClick={() => changeProfile(key)} aria-pressed={key === profile}>
+                <span>{PROFILES[key].avatar}</span><strong>{PROFILES[key].name}</strong>
+              </button>
+            ))}
+          </div>
+          {(accessState === "checking" || loading) ? (
+            <div className="access-loading"><span />正在检查安全钥匙…</div>
+          ) : accessState === "unconfigured" ? (
+            <div className="access-parent-needed">
+              <strong>🔐 还差家长设置 PIN</strong>
+              <p>请家长先到后台的“孩子 PIN”页面，为 {learner.name} 设置一个专属 PIN。</p>
+              <Link href="/admin">前往家长后台 →</Link>
+            </div>
+          ) : (
+            <div className="access-form">
+              <label>我的 PIN
+                <input autoFocus inputMode="numeric" type="password" value={childPinInput} onChange={(event) => setChildPinInput(event.target.value.replace(/\D/g, "").slice(0, 12))} onKeyDown={(event) => event.key === "Enter" && void unlockProfile()} placeholder="输入 4–12 位数字" />
+              </label>
+              {pinError && <p className="pin-error">{pinError}</p>}
+              <button className="confirm-button" type="button" disabled={submitting || childPinInput.length < 4} onClick={() => void unlockProfile()}>{submitting ? "正在验证…" : `打开 ${learner.name} 的档案`}</button>
+            </div>
+          )}
+          <small className="access-privacy-note">🛡️ 每个孩子只能用自己的 PIN 查看和管理自己的积分</small>
+        </section>
+        {toast && <div className={`toast ${toast.tone}`} role="status" aria-live="polite"><span>{toast.tone === "success" ? "✓" : "!"}</span>{toast.text}</div>}
+      </main>
+    );
+  }
 
   return (
     <main className={`mall-shell profile-${profile}`}>
@@ -334,9 +401,9 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
             <button
               className={`child-auth-chip ${childSession ? "unlocked" : "locked"}`}
               type="button"
-              onClick={() => childSession ? lockProfile() : setPinPromptOpen(true)}
+              onClick={lockProfile}
             >
-              {!dashboard?.childPinConfigured ? "🔐 等待家长设置 PIN" : childSession ? "🔓 已解锁 · 点击锁定" : "🔒 用 PIN 解锁"}
+              🔓 已解锁 · 点击锁定
             </button>
           </div>
           <h1>今天也让自己<br /><em>闪闪发光</em>吧！</h1>
@@ -488,28 +555,6 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
             <label className="note-field">为什么想加入？（选填）<input value={customNote} maxLength={120} onChange={(event) => setCustomNote(event.target.value)} placeholder="可以告诉爸爸妈妈你的想法" /></label>
             <p className="parent-note">🔒 申请不会直接增加或扣除积分，家长确认分值后才会加入。</p>
             <button className="confirm-button" type="button" disabled={submitting || !customLabel.trim()} onClick={() => void submitCustomRequest()}>{submitting ? "正在提交…" : "提交给家长"}</button>
-          </section>
-        </div>
-      )}
-
-      {pinPromptOpen && (
-        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setPinPromptOpen(false)}>
-          <section className="action-modal pin-modal" role="dialog" aria-modal="true" aria-labelledby="pin-title">
-            <button className="modal-close" type="button" onClick={() => setPinPromptOpen(false)} aria-label="关闭">×</button>
-            <span className="modal-icon">{learner.avatar}</span>
-            <span className="modal-kicker">MY PRIVATE PIN</span>
-            <h2 id="pin-title">解锁 {learner.name} 的档案</h2>
-            <p className="modal-unit">只有这个孩子的 PIN 才能记录、兑换或撤销自己的积分。</p>
-            {!dashboard?.childPinConfigured ? (
-              <p className="parent-note">🔐 家长还没有设置 PIN，请先前往家长后台的“孩子 PIN”页面设置。</p>
-            ) : (
-              <>
-                <label className="note-field">孩子 PIN<input autoFocus inputMode="numeric" type="password" value={childPinInput} onChange={(event) => setChildPinInput(event.target.value.replace(/\D/g, "").slice(0, 12))} onKeyDown={(event) => event.key === "Enter" && void unlockProfile()} placeholder="输入自己的 PIN" /></label>
-                {pinError && <p className="pin-error">{pinError}</p>}
-                <button className="confirm-button" type="button" disabled={submitting || childPinInput.length < 4} onClick={() => void unlockProfile()}>{submitting ? "正在验证…" : "解锁我的档案"}</button>
-              </>
-            )}
-            <Link className="pin-parent-link" href="/admin">家长设置或重设 PIN →</Link>
           </section>
         </div>
       )}

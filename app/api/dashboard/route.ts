@@ -1,6 +1,6 @@
 import type { DashboardPayload, HistoryEvent } from "@/lib/api-types";
 import type { Profile } from "@/lib/catalog";
-import { childPinConfigured } from "@/lib/child-auth";
+import { childPinConfigured, requireChildSession } from "@/lib/child-auth";
 import { appEnv, ensureSchema, ownerKey } from "@/lib/db";
 import { ensureExcelHistory, importedDisplayPoints } from "@/lib/excel-history";
 import { loadCatalog } from "@/lib/catalog-store";
@@ -28,6 +28,9 @@ export async function GET(request: Request): Promise<Response> {
   const { DB } = appEnv();
   await ensureSchema(DB);
   const owner = ownerKey(request);
+  const authError = await requireChildSession(request, DB, owner, profile);
+  if (authError) return authError;
+
   await ensureExcelHistory(DB, owner);
   const integration = await syncKnowledgePoints(request, profile, DB);
 
@@ -88,5 +91,10 @@ export async function GET(request: Request): Promise<Response> {
     items: catalog.items,
     pendingRequestCount: Number((requestResult.results[0] as { count: number } | undefined)?.count || 0),
   };
-  return Response.json(payload);
+  return Response.json(payload, {
+    headers: {
+      "Cache-Control": "private, no-store",
+      Vary: "x-child-session, x-parent-pin",
+    },
+  });
 }
