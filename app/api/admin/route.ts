@@ -365,7 +365,7 @@ async function undoKnowledgeAdjustment(db: D1Database, owner: string, body: Admi
   } satisfies MutationPayload);
 }
 
-export async function POST(request: Request): Promise<Response> {
+async function handlePost(request: Request): Promise<Response> {
   const context = await prepare(request);
   if (context instanceof Response) return context;
   const body = await request.json<AdminAction>().catch(() => null);
@@ -401,4 +401,16 @@ export async function POST(request: Request): Promise<Response> {
     return Response.json({ ok: true, message: "这条申请已暂不采用。" });
   }
   return Response.json({ error: "不支持的管理操作。" }, { status: 400 });
+}
+
+export async function POST(request: Request): Promise<Response> {
+  try {
+    return await handlePost(request);
+  } catch (error) {
+    console.error({
+      message: "admin action failed",
+      error: error instanceof Error ? error.message : "unknown error",
+    });
+    return Response.json({ error: "服务器暂时没有保存成功，请稍后再试。" }, { status: 500 });
+  }
 }

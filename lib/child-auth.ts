@@ -1,7 +1,9 @@
 import type { Profile } from "@/lib/catalog";
 import { isParentRequest } from "@/lib/parent-auth";
 
-const PIN_ITERATIONS = 120_000;
+// Keep PIN hashing below the Workers Free 10 ms CPU budget. Online guessing is
+// additionally limited by the failed-attempt lock below.
+const PIN_ITERATIONS = 10_000;
 const SESSION_HOURS = 12;
 const MAX_FAILED_ATTEMPTS = 5;
 const LOCK_MINUTES = 5;

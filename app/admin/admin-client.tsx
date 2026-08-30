@@ -1,10 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import type { AdminOverviewPayload, CustomRequest } from "@/lib/api-types";
 import { PROFILES, RULE_CATEGORIES, STORE_CATEGORIES, type Profile } from "@/lib/catalog";
 import type { EditableItem, EditableRule } from "@/lib/catalog-store";
+import { readJsonResponse } from "@/lib/http-client";
 
 type AdminTab = "requests" | "rules" | "items" | "balance" | "security";
 
@@ -53,9 +53,9 @@ export default function AdminClient() {
 
   const load = useCallback(async (activePin: string) => {
     const response = await adminFetch(activePin);
-    const payload: unknown = await response.json();
+    const payload = await readJsonResponse(response);
     if (!response.ok || !payload || typeof payload !== "object" || !("balances" in payload)) {
-      throw new Error(messageFromPayload(payload, "家长后台暂时没有加载成功。"));
+      throw new Error(messageFromPayload(payload, `家长后台暂时没有加载成功（HTTP ${response.status}）。`));
     }
     setData(payload as AdminOverviewPayload);
   }, [adminFetch]);
@@ -93,8 +93,10 @@ export default function AdminClient() {
     setError(null);
     try {
       const response = await adminFetch(pin, { method: "POST", body: JSON.stringify(body) });
-      const payload: unknown = await response.json();
-      if (!response.ok) throw new Error(messageFromPayload(payload, "这次修改没有保存成功。"));
+      const payload = await readJsonResponse(response);
+      if (!response.ok || !payload || typeof payload !== "object") {
+        throw new Error(messageFromPayload(payload, `这次修改没有保存成功（HTTP ${response.status}）。`));
+      }
       setNotice(messageFromPayload(payload, "修改已保存。"));
       await load(pin);
       return true;
@@ -156,7 +158,7 @@ export default function AdminClient() {
     return (
       <main className="admin-login-shell">
         <section className="admin-login-card">
-          <Link href="/" className="admin-back">← 返回孩子页面</Link>
+          <button type="button" className="admin-back" onClick={() => window.location.assign("/")}>← 返回孩子页面</button>
           <span className="admin-lock">🔐</span>
           <p className="admin-eyebrow">PARENT SPACE</p>
           <h1>家长后台</h1>
@@ -172,7 +174,7 @@ export default function AdminClient() {
   return (
     <main className="admin-shell">
       <header className="admin-header">
-        <div><Link href="/" className="admin-back">← 返回积分商城</Link><h1>家长控制台</h1><p>每一次修改都会保存到家庭账户。</p></div>
+        <div><button type="button" className="admin-back" onClick={() => window.location.assign("/")}>← 返回积分商城</button><h1>家长控制台</h1><p>每一次修改都会保存到家庭账户。</p></div>
         <button type="button" className="admin-logout" onClick={() => { window.sessionStorage.removeItem("mall-parent-pin"); setPin(""); setData(null); }}>退出</button>
       </header>
 
@@ -281,7 +283,7 @@ export default function AdminClient() {
         {tab === "security" && (
           <>
             <AdminPanelTitle eyebrow="CHILD SECURITY" title="设置孩子独立 PIN" action={null} />
-            <p className="security-intro">每个孩子只能用自己的 PIN 解锁自己的档案。查看积分无需 PIN，但记录、兑换、申请和撤销都需要先解锁。</p>
+            <p className="security-intro">每个孩子只能用自己的 PIN 解锁自己的档案。查看积分、记录、兑换、申请和撤销都需要先解锁。</p>
             <div className="security-grid">
               {(Object.keys(PROFILES) as Profile[]).map((profile) => (
                 <article className={`security-card ${profile}`} key={profile}>

@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import Link from "next/link";
 import type { DashboardPayload, MutationPayload } from "@/lib/api-types";
 import {
   PROFILES,
@@ -11,6 +10,7 @@ import {
   type StoreItem,
 } from "@/lib/catalog";
 import { discountedCost } from "@/lib/points";
+import { readJsonResponse } from "@/lib/http-client";
 
 type Tab = "earn" | "store" | "history";
 type AccessState = "checking" | "required" | "unconfigured" | "unlocked";
@@ -80,7 +80,7 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
         cache: "no-store",
         headers: sessionToken ? { "x-child-session": sessionToken } : undefined,
       });
-      const payload: unknown = await response.json();
+      const payload = await readJsonResponse(response);
       if (response.status === 401 || response.status === 428) {
         window.sessionStorage.removeItem(`mall-child-session-${profile}`);
         setChildSession("");
@@ -190,7 +190,7 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ profile, pin: childPinInput }),
       });
-      const payload: unknown = await response.json();
+      const payload = await readJsonResponse(response);
       if (!response.ok || !isChildAuthPayload(payload)) {
         throw new Error(messageFromPayload(payload, "PIN 验证没有成功。"));
       }
@@ -235,7 +235,7 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
         headers: { "Content-Type": "application/json", "x-child-session": activeSession },
         body: JSON.stringify(body),
       });
-      const payload: unknown = await response.json();
+      const payload = await readJsonResponse(response);
       if (response.status === 401) {
         lockProfile();
       }
@@ -261,7 +261,7 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
         headers: { "Content-Type": "application/json", "x-child-session": activeSession },
         body: JSON.stringify({ profile, eventId, eventDate: todayLocal(), idempotencyKey: crypto.randomUUID() }),
       });
-      const payload: unknown = await response.json();
+      const payload = await readJsonResponse(response);
       if (response.status === 401) {
         lockProfile();
       }
@@ -292,11 +292,13 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
           idempotencyKey: crypto.randomUUID(),
         }),
       });
-      const payload: unknown = await response.json();
+      const payload = await readJsonResponse(response);
       if (response.status === 401) {
         lockProfile();
       }
-      if (!response.ok) throw new Error(messageFromPayload(payload, "申请暂时没有保存成功。"));
+      if (!response.ok || !payload || typeof payload !== "object") {
+        throw new Error(messageFromPayload(payload, `申请暂时没有保存成功（HTTP ${response.status}）。`));
+      }
       setCustomRequestType(null);
       setCustomLabel("");
       setCustomNote("");
@@ -327,7 +329,7 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
             <span className="brand-orb">S!</span>
             <span><strong>超级无敌</strong><small>积分大商场</small></span>
           </span>
-          <Link className="parent-link" href="/admin" aria-label="进入家长后台">⚙️<strong>家长</strong></Link>
+          <a className="parent-link" href="/admin" aria-label="进入家长后台">⚙️<strong>家长</strong></a>
         </header>
         <section className="access-card" aria-live="polite">
           <span className="access-stars">✦　⭐　✦</span>
@@ -348,7 +350,7 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
             <div className="access-parent-needed">
               <strong>🔐 还差家长设置 PIN</strong>
               <p>请家长先到后台的“孩子 PIN”页面，为 {learner.name} 设置一个专属 PIN。</p>
-              <Link href="/admin">前往家长后台 →</Link>
+              <a href="/admin">前往家长后台 →</a>
             </div>
           ) : (
             <div className="access-form">
@@ -390,7 +392,7 @@ export default function MallClient({ initialProfile }: { initialProfile: Profile
               <span>{PROFILES[key].avatar}</span><strong>{PROFILES[key].name}</strong>
             </button>
           ))}
-          <Link className="parent-link" href="/admin" aria-label="进入家长后台">⚙️<strong>家长</strong></Link>
+          <a className="parent-link" href="/admin" aria-label="进入家长后台">⚙️<strong>家长</strong></a>
         </div>
       </header>
 
